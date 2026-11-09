@@ -37,17 +37,16 @@ failed=0
 warnings=0
 
 pass() {
-    echo "PASS: $*"
     passed=$((passed + 1))
 }
 
 fail() {
-    echo "FAIL: $*"
+    failures+=("$*")
     failed=$((failed + 1))
 }
 
 warn() {
-    echo "WARN: $*"
+    warnings_list+=("$*")
     warnings=$((warnings + 1))
 }
 
@@ -64,6 +63,9 @@ check_file() {
         fail "$label (missing: $path)"
     fi
 }
+
+failures=()
+warnings_list=()
 
 check_intended_for() {
     local json_file=$1
@@ -100,8 +102,9 @@ for target in intended:
 PY
     then
         fail "fieldmap IntendedFor invalid: $json_file"
+        echo "FAIL: fieldmap IntendedFor invalid: $(basename "$json_file")"
     else
-        pass "fieldmap IntendedFor valid: $(basename "$json_file")"
+        pass "fieldmap IntendedFor valid"
     fi
 }
 
@@ -121,16 +124,27 @@ for session_dir in "${sessions[@]}"; do
     func_count=$(find "$func" -maxdepth 1 -type f 2>/dev/null | wc -l)
     info "$SUBJECT/$session func contains $func_count files; complete expected pattern is 42"
 
+    anat_missing=()
     for file in \
         "${SUBJECT}_${session}_run-01_T1w.nii.gz" \
         "${SUBJECT}_${session}_run-01_T1w.json" \
         "${SUBJECT}_${session}_run-02_T1w.nii.gz" \
         "${SUBJECT}_${session}_run-02_T1w.json"; do
-        check_file "$anat/$file" "anat file $file"
+        if [[ ! -f "$anat/$file" ]]; then
+            anat_missing+=("$file")
+            fail "anat: missing $file"
+        else
+            pass "anat: $file"
+        fi
     done
+    if [[ ${#anat_missing[@]} -eq 0 ]]; then
+        echo "PASS: anat (4/4 expected files)"
+    else
+        echo "FAIL: anat (${#anat_missing[@]} missing: ${anat_missing[*]})"
+    fi
 
     for task in bandit circle ghost mdp1 mdp2; do
-        label=$task
+        task_missing=()
         for file in \
             "${SUBJECT}_${session}_task-${task}_run-01_events.tsv" \
             "${SUBJECT}_${session}_task-${task}_run-01_echo-1_bold.nii.gz" \
@@ -139,8 +153,19 @@ for session_dir in "${sessions[@]}"; do
             "${SUBJECT}_${session}_task-${task}_run-01_echo-2_bold.json" \
             "${SUBJECT}_${session}_task-${task}_run-01_echo-3_bold.nii.gz" \
             "${SUBJECT}_${session}_task-${task}_run-01_echo-3_bold.json"; do
-            check_file "$func/$file" "func $label file $file"
+            if [[ ! -f "$func/$file" ]]; then
+                task_missing+=("$file")
+                fail "func $task: missing $file"
+            else
+                pass "func $task: $file"
+            fi
         done
+        if [[ ${#task_missing[@]} -eq 0 ]]; then
+            echo "PASS: func $task (7/7 expected files)"
+        else
+            echo "FAIL: func $task (${#task_missing[@]} missing)"
+            printf '      - %s\n' "${task_missing[@]}"
+        fi
     done
 
     berry_label=
@@ -148,6 +173,7 @@ for session_dir in "${sessions[@]}"; do
         if compgen -G "$func/${SUBJECT}_${session}_task-${candidate}_run-01_*" >/dev/null; then
             if [[ -n "$berry_label" ]]; then
                 warn "$SUBJECT/$session contains both task-berry and task-coin"
+                echo "WARN: both task-berry and task-coin found for berry/coin"
             else
                 berry_label=$candidate
             fi
@@ -155,8 +181,10 @@ for session_dir in "${sessions[@]}"; do
     done
 
     if [[ -z "$berry_label" ]]; then
-        fail "func berry/coin task is missing"
+        fail "func berry/coin: task-berry and task-coin are missing"
+        echo "FAIL: func berry/coin (task-berry or task-coin not found)"
     else
+        berry_missing=()
         for file in \
             "${SUBJECT}_${session}_task-${berry_label}_run-01_events.tsv" \
             "${SUBJECT}_${session}_task-${berry_label}_run-01_echo-1_bold.nii.gz" \
@@ -165,22 +193,41 @@ for session_dir in "${sessions[@]}"; do
             "${SUBJECT}_${session}_task-${berry_label}_run-01_echo-2_bold.json" \
             "${SUBJECT}_${session}_task-${berry_label}_run-01_echo-3_bold.nii.gz" \
             "${SUBJECT}_${session}_task-${berry_label}_run-01_echo-3_bold.json"; do
-            check_file "$func/$file" "func berry/coin (task-$berry_label) file $file"
+            if [[ ! -f "$func/$file" ]]; then
+                berry_missing+=("$file")
+                fail "func berry/coin: missing $file"
+            else
+                pass "func berry/coin: $file"
+            fi
         done
+        if [[ ${#berry_missing[@]} -eq 0 ]]; then
+            echo "PASS: func berry/coin (task-$berry_label, 7/7 expected files)"
+        else
+            echo "FAIL: func berry/coin (task-$berry_label, ${#berry_missing[@]} missing)"
+            printf '      - %s\n' "${berry_missing[@]}"
+        fi
     fi
 
+    fmap_missing=()
     for direction in AP PA; do
         if compgen -G "$fmap/*_dir-${direction}_epi.nii.gz" >/dev/null; then
-            pass "fmap has $direction NIfTI"
+            pass "fmap $direction NIfTI"
         else
-            fail "fmap has no $direction NIfTI"
+            fmap_missing+=("$direction NIfTI")
+            fail "fmap: missing $direction NIfTI"
         fi
         if compgen -G "$fmap/*_dir-${direction}_epi.json" >/dev/null; then
-            pass "fmap has $direction JSON"
+            pass "fmap $direction JSON"
         else
-            fail "fmap has no $direction JSON"
+            fmap_missing+=("$direction JSON")
+            fail "fmap: missing $direction JSON"
         fi
     done
+    if [[ ${#fmap_missing[@]} -eq 0 ]]; then
+        echo "PASS: fmap (AP/PA NIfTI and JSON present)"
+    else
+        echo "FAIL: fmap missing: ${fmap_missing[*]}"
+    fi
 
     fmap_json_count=0
     for fmap_json in "$fmap"/*_dir-*_epi.json; do
@@ -196,17 +243,20 @@ for session_dir in "${sessions[@]}"; do
         nm_count=$(find "$BIDS_ROOT/derivatives/$SUBJECT/$session/anat" -maxdepth 1 -type f \
             \( -name '*_NM.nii.gz' -o -name '*_NM.json' \) | wc -l)
         if [[ "$nm_count" -eq 8 ]]; then
-            pass "derivatives NM data has 8 files"
+            pass "derivatives NM data"
+            echo "PASS: derivatives NM (8/8 expected files)"
         else
             warn "derivatives NM data has $nm_count files; expected 8 when available"
+            echo "WARN: derivatives NM ($nm_count/8 files; verify if NM was scanned)"
         fi
     else
         warn "derivatives NM data is absent; verify external scan records"
+        echo "WARN: derivatives NM (not present; verify if NM was scanned)"
     fi
 done
 
 echo
-echo "Summary: $passed passed, $failed failed, $warnings warnings"
+echo "Summary: $passed checks passed, $failed checks failed, $warnings warnings"
 if [[ "$failed" -gt 0 ]]; then
     exit 1
 fi
