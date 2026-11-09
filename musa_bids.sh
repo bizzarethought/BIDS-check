@@ -51,6 +51,10 @@ warn() {
     warnings=$((warnings + 1))
 }
 
+info() {
+    echo "INFO: $*"
+}
+
 check_file() {
     local path=$1
     local label=$2
@@ -58,6 +62,46 @@ check_file() {
         pass "$label"
     else
         fail "$label (missing: $path)"
+    fi
+}
+
+check_intended_for() {
+    local json_file=$1
+    local participant_dir=$2
+    local subject=$3
+    local session=$4
+
+    if ! python3 - "$json_file" "$participant_dir" "$subject" "$session" <<'PY'
+import json
+import os
+import sys
+
+json_file, participant_dir, subject, session = sys.argv[1:]
+try:
+    with open(json_file, encoding="utf-8") as stream:
+        metadata = json.load(stream)
+except (OSError, json.JSONDecodeError) as error:
+    print(f"invalid JSON ({error})")
+    raise SystemExit(1)
+
+intended = metadata.get("IntendedFor")
+if not isinstance(intended, list) or not intended:
+    print("missing or empty IntendedFor")
+    raise SystemExit(1)
+
+for target in intended:
+    expected_prefix = f"{session}/func/{subject}_{session}_task-"
+    if not isinstance(target, str) or not target.startswith(expected_prefix) or not target.endswith("_bold.nii.gz"):
+        print(f"invalid functional target: {target}")
+        raise SystemExit(1)
+    if not os.path.isfile(os.path.join(participant_dir, target)):
+        print(f"missing target: {target}")
+        raise SystemExit(1)
+PY
+    then
+        fail "fieldmap IntendedFor invalid: $json_file"
+    else
+        pass "fieldmap IntendedFor valid: $(basename "$json_file")"
     fi
 }
 
@@ -74,6 +118,8 @@ for session_dir in "${sessions[@]}"; do
     anat="$session_dir/anat"
     func="$session_dir/func"
     fmap="$session_dir/fmap"
+    func_count=$(find "$func" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    info "$SUBJECT/$session func contains $func_count files; complete expected pattern is 42"
 
     for file in \
         "${SUBJECT}_${session}_run-01_T1w.nii.gz" \
@@ -135,6 +181,16 @@ for session_dir in "${sessions[@]}"; do
             fail "fmap has no $direction JSON"
         fi
     done
+
+    fmap_json_count=0
+    for fmap_json in "$fmap"/*_dir-*_epi.json; do
+        [[ -f "$fmap_json" ]] || continue
+        fmap_json_count=$((fmap_json_count + 1))
+        check_intended_for "$fmap_json" "$BIDS_ROOT/$SUBJECT" "$SUBJECT" "$session"
+    done
+    if [[ "$fmap_json_count" -eq 0 ]]; then
+        fail "fmap has no JSON files to validate"
+    fi
 
     if [[ -d "$BIDS_ROOT/derivatives/$SUBJECT/$session/anat" ]]; then
         nm_count=$(find "$BIDS_ROOT/derivatives/$SUBJECT/$session/anat" -maxdepth 1 -type f \
