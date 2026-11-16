@@ -32,7 +32,7 @@ group() {
 
 # check_intended JSON: IntendedFor must list existing func BOLD files of this
 # session. Accepts a string or array, relative or bids:: URI paths.
-# Uses $s (the session) from check_session.
+# Uses $s (the session) from check_session, and $sub (the participant) from the main script.
 check_intended() {
     local name=${1##*/} pre="$s/func/${sub}_${s}_task-" t
     while IFS= read -r t; do
